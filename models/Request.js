@@ -68,7 +68,25 @@ const requestSchema = new mongoose.Schema({
   note: {
     type: String,
     default: null
+  },
+
+  // Payment information
+  paymentId: {
+    type: String,
+    default: null   // Razorpay payment ID e.g. pay_XXXXXXXXXX
+  },
+
+  amountPaid: {
+    type: Number,
+    default: 0      // Total amount paid (INR, including 18% GST)
+  },
+
+  paymentStatus: {
+    type: String,
+    enum: ['unpaid', 'paid'],
+    default: 'unpaid'
   }
+
 }, {
   timestamps: true
 });

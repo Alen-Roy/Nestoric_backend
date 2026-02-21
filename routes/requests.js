@@ -201,7 +201,7 @@ router.put('/:id/note', authenticateToken, async (req, res) => {
 // ==========================================
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const { services, description, deadline } = req.body;
+    const { services, description, deadline, paymentId, amountPaid } = req.body;
 
     // Validate
     if (!services || services.length === 0) {
@@ -210,6 +210,11 @@ router.post('/', authenticateToken, async (req, res) => {
 
     if (!description || description.length < 20) {
       return res.status(400).json({ error: 'Description must be at least 20 characters' });
+    }
+
+    // Require payment confirmation before submitting
+    if (!paymentId) {
+      return res.status(400).json({ error: 'Payment is required to submit a request' });
     }
 
     // Get user info
@@ -223,11 +228,11 @@ router.post('/', authenticateToken, async (req, res) => {
       services,
       description,
       deadline: deadline || null,
-      services,
-      description,
-      deadline: deadline || null,
       status: 'pending',
-      uploadedFiles: req.body.uploadedFiles || []
+      uploadedFiles: req.body.uploadedFiles || [],
+      paymentId,
+      amountPaid: amountPaid || 0,
+      paymentStatus: 'paid'
     });
 
     res.status(201).json({
