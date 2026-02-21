@@ -63,7 +63,8 @@ app.get('/', (req, res) => {
       auth: '/api/auth',
       requests: '/api/requests',
       users: '/api/users',
-      upload: '/api/upload'
+      upload: '/api/upload',
+      pricing: '/api/pricing'
     }
   });
 });
@@ -81,8 +82,8 @@ try {
 } catch (error) {
   console.log('⚠️  Auth routes not found - skipping');
 }
-// Add this with your other route imports
 
+// Add this with your other route imports
 try {
   const chatRoutes = require('./routes/chat');
   app.use('/api/chat', chatRoutes);
@@ -110,6 +111,17 @@ try {
   console.log('✅ Upload routes loaded');
 } catch (error) {
   console.log('⚠️  Upload routes not found - skipping');
+}
+
+// ✅ NEW: Service Pricing routes
+try {
+  const pricingRoutes = require('./routes/pricing');
+  const ServicePricing = require('./models/ServicePricing');
+  app.use('/api/pricing', pricingRoutes);
+  ServicePricing.seedDefaults(); // Auto-seeds default prices if DB is empty
+  console.log('✅ Pricing routes loaded');
+} catch (error) {
+  console.log('⚠️  Pricing routes not found - skipping:', error.message);
 }
 
 // Connect routes if they exist
