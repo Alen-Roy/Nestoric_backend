@@ -1,15 +1,11 @@
-// utils/mailer.js — Email sending via Resend (HTTP API — works on Render)
-// Render blocks outbound SMTP ports (465, 587), so we use Resend's REST API instead.
+// utils/mailer.js — Email via Brevo (formerly Sendinblue) HTTP API
+// Brevo's free tier (300 emails/day) sends to ANY email without domain verification.
+// Uses Node's built-in https — no extra npm package needed.
 
-const { Resend } = require('resend');
-
-const resend = new Resend(process.env.RESEND_API_KEY);
+const https = require('https');
 
 /**
- * Send a verification email using Resend's HTTP API.
- * IMPORTANT: Resend SDK never throws — it returns { data, error }.
- * We must manually check the error field and throw so callers see failures.
- *
+ * Send a verification email via Brevo's Transactional Email API.
  * @param {string} to    - Recipient email address
  * @param {string} token - Raw verification token
  */
@@ -17,11 +13,14 @@ async function sendVerificationEmail(to, token) {
   const baseUrl = process.env.BACKEND_URL || 'https://nestoric-backend.onrender.com';
   const verifyUrl = `${baseUrl}/api/auth/verify-email/${token}`;
 
-  const { data, error } = await resend.emails.send({
-    from: 'Nestoric <onboarding@resend.dev>',  // Use resend.dev until you add your own domain
-    to,
+  const payload = JSON.stringify({
+    sender: {
+      name: 'Nestoric',
+      email: process.env.EMAIL_USER, // your Gmail — Brevo lets you use any sender
+    },
+    to: [{ email: to }],
     subject: 'Verify your Nestoric account',
-    html: `
+    htmlContent: `
       <!DOCTYPE html>
       <html>
       <head>
@@ -65,13 +64,45 @@ async function sendVerificationEmail(to, token) {
     `,
   });
 
-  // Resend SDK never throws — we must check the error field manually
-  if (error) {
-    console.error('[Resend] API returned error:', JSON.stringify(error, null, 2));
-    throw new Error(error.message || 'Failed to send email via Resend');
-  }
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.brevo.com',
+      path: '/v3/smtp/email',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'api-key': process.env.BREVO_API_KEY,
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    };
 
-  console.log('[Resend] Email sent, id:', data?.id);
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          console.log('[Brevo] Email sent successfully, messageId:', JSON.parse(body).messageId);
+          resolve();
+        } else {
+          const errMsg = `Brevo API error ${res.statusCode}: ${body}`;
+          console.error('[Brevo] Error:', errMsg);
+          reject(new Error(errMsg));
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error('[Brevo] Request error:', err.message);
+      reject(err);
+    });
+
+    req.setTimeout(10000, () => {
+      req.destroy(new Error('Brevo request timed out after 10s'));
+    });
+
+    req.write(payload);
+    req.end();
+  });
 }
 
 module.exports = { sendVerificationEmail };
