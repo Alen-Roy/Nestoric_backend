@@ -7,6 +7,9 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 /**
  * Send a verification email using Resend's HTTP API.
+ * IMPORTANT: Resend SDK never throws — it returns { data, error }.
+ * We must manually check the error field and throw so callers see failures.
+ *
  * @param {string} to    - Recipient email address
  * @param {string} token - Raw verification token
  */
@@ -14,7 +17,7 @@ async function sendVerificationEmail(to, token) {
   const baseUrl = process.env.BACKEND_URL || 'https://nestoric-backend.onrender.com';
   const verifyUrl = `${baseUrl}/api/auth/verify-email/${token}`;
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: 'Nestoric <onboarding@resend.dev>',  // Use resend.dev until you add your own domain
     to,
     subject: 'Verify your Nestoric account',
@@ -61,6 +64,14 @@ async function sendVerificationEmail(to, token) {
       </html>
     `,
   });
+
+  // Resend SDK never throws — we must check the error field manually
+  if (error) {
+    console.error('[Resend] API returned error:', JSON.stringify(error, null, 2));
+    throw new Error(error.message || 'Failed to send email via Resend');
+  }
+
+  console.log('[Resend] Email sent, id:', data?.id);
 }
 
 module.exports = { sendVerificationEmail };
