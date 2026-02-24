@@ -142,7 +142,15 @@ router.post('/signup', async (req, res) => {
     );
 
     // Send verification email
-    await sendVerificationEmail(email, rawToken);
+    console.log(`[Signup] Sending verification email to: ${email}`);
+    try {
+      await sendVerificationEmail(email, rawToken);
+      console.log(`[Signup] Verification email sent successfully to: ${email}`);
+    } catch (mailErr) {
+      console.error('[Signup] RESEND ERROR:', JSON.stringify(mailErr, null, 2));
+      // Still respond with requiresVerification so user stays on the right screen
+      // They can use the resend button
+    }
 
     res.status(201).json({
       requiresVerification: true,
@@ -302,12 +310,14 @@ router.post('/resend-verification', async (req, res) => {
     pending.expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await pending.save();
 
+    console.log(`[Resend] Sending verification email to: ${email}`);
     await sendVerificationEmail(email, rawToken);
+    console.log(`[Resend] Verification email sent successfully to: ${email}`);
 
     res.json({ message: 'Verification email resent successfully.' });
 
   } catch (error) {
-    console.error('Resend verification error:', error);
+    console.error('[Resend] Error:', JSON.stringify(error, null, 2));
     res.status(500).json({ error: 'Failed to resend verification email' });
   }
 });
