@@ -57,6 +57,13 @@ const userSchema = new mongoose.Schema({
     default: null
   },
 
+  // Phone number (for Razorpay pre-fill)
+  phone: {
+    type: String,
+    default: null,
+    trim: true
+  },
+
   // Worker-specific fields (only for workers)
   workerProfile: {
     skills: [{
@@ -102,7 +109,7 @@ userSchema.index({ role: 1 });         // Search by role
 // ==========================================
 
 // Remove password when converting to JSON
-userSchema.methods.toJSON = function() {
+userSchema.methods.toJSON = function () {
   const user = this.toObject();
   delete user.password;  // Don't send password to client!
   return user;
