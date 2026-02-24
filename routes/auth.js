@@ -221,6 +221,45 @@ router.post('/login', async (req, res) => {
 });
 
 // ==========================================
+// CHECK VERIFICATION STATUS (polling)
+// Called by the Flutter app every few seconds while waiting.
+// Returns a JWT when the user has verified their email.
+// ==========================================
+router.get('/check-verification', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ verified: false });
+
+    const user = await User.findOne({ email, isEmailVerified: true });
+    if (!user) return res.json({ verified: false });
+
+    // Issue a JWT so the app can log in automatically
+    const token = jwt.sign(
+      { userId: user._id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.json({
+      verified: true,
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
+        phone: user.phone || null,
+        workerProfile: user.workerProfile,
+      },
+    });
+  } catch (error) {
+    console.error('Check verification error:', error);
+    res.status(500).json({ verified: false });
+  }
+});
+
+// ==========================================
 // VERIFY EMAIL — user clicks link in email
 // ==========================================
 router.get('/verify-email/:token', async (req, res) => {
