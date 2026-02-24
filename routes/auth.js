@@ -4,8 +4,10 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const User = require('../models/User');
 const admin = require('firebase-admin');
+const { sendVerificationEmail } = require('../utils/mailer');
 
 const router = express.Router();
 
@@ -62,7 +64,7 @@ router.post('/google', async (req, res) => {
         await user.save();
       }
     } else {
-      // New user — create them (no password needed)
+      // New Google user — already verified since Google verified their email
       user = await User.create({
         email,
         fullName: name || email.split('@')[0],
@@ -70,6 +72,7 @@ router.post('/google', async (req, res) => {
         googleId: uid,
         authProvider: 'google',
         role: 'client',
+        isEmailVerified: true, // Google handles email verification
       });
     }
 
@@ -105,65 +108,48 @@ router.post('/google', async (req, res) => {
 // ==========================================
 router.post('/signup', async (req, res) => {
   try {
-    // Get data from Flutter app
     const { email, password, fullName, phone } = req.body;
 
-    // STEP 1: Validate input
     if (!email || !password || !fullName) {
-      return res.status(400).json({
-        error: 'Please provide email, password, and full name'
-      });
+      return res.status(400).json({ error: 'Please provide email, password, and full name' });
     }
-
     if (password.length < 6) {
-      return res.status(400).json({
-        error: 'Password must be at least 6 characters'
-      });
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    // STEP 2: Check if email already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({
-        error: 'Email already registered'
-      });
+      return res.status(400).json({ error: 'Email already registered' });
     }
 
-    // STEP 3: Encrypt password (NEVER store plain passwords!)
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // STEP 4: Create new user in database
+    // Generate a secure random verification token (valid 24 hours)
+    const rawToken = crypto.randomBytes(32).toString('hex');
+
     const user = await User.create({
       email,
       password: hashedPassword,
       fullName,
       phone: phone || null,
-      role: 'client' // Default role
+      role: 'client',
+      isEmailVerified: false,
+      emailVerificationToken: rawToken,
+      emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
     });
 
-    // STEP 5: Create JWT token (like a ticket that proves you're logged in)
-    const token = jwt.sign(
-      {
-        userId: user._id,      // MongoDB auto-generated ID
-        email: user.email,
-        role: user.role
-      },
-      process.env.JWT_SECRET,  // Secret key from .env
-      { expiresIn: '90d' }     // Token valid for 30 days
-    );
+    // Send verification email (non-blocking — don't fail signup if email fails)
+    try {
+      await sendVerificationEmail(email, rawToken);
+    } catch (mailErr) {
+      console.error('Failed to send verification email:', mailErr.message);
+    }
 
-    // STEP 6: Send response back to Flutter
+    // Do NOT issue a JWT yet — user must verify email first
     res.status(201).json({
-      message: 'User created successfully',
-      user: {
-        id: user._id,
-        email: user.email,
-        fullName: user.fullName,
-        role: user.role,
-        avatarUrl: user.avatarUrl,
-        phone: user.phone || null,
-      },
-      token
+      requiresVerification: true,
+      message: 'Account created! Please check your email to verify your account.',
+      email: user.email,
     });
 
   } catch (error) {
@@ -179,43 +165,35 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // STEP 1: Validate input
     if (!email || !password) {
-      return res.status(400).json({
-        error: 'Please provide email and password'
-      });
+      return res.status(400).json({ error: 'Please provide email and password' });
     }
 
-    // STEP 2: Find user by email
     const user = await User.findOne({ email });
-
     if (!user) {
-      return res.status(401).json({
-        error: 'Invalid email or password'
-      });
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // STEP 3: Check if password is correct
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        error: 'Invalid email or password'
-      });
-    }
-
-    // STEP 4: Create JWT token
-    const token = jwt.sign(
-      {
-        userId: user._id,
+    // Block login for unverified email/password accounts
+    if (!user.isEmailVerified && user.authProvider !== 'google') {
+      return res.status(403).json({
+        error: 'EMAIL_NOT_VERIFIED',
+        message: 'Please verify your email before logging in.',
         email: user.email,
-        role: user.role
-      },
+      });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const token = jwt.sign(
+      { userId: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '30d' }
     );
 
-    // STEP 5: Send response
     res.json({
       message: 'Login successful',
       user: {
@@ -225,14 +203,88 @@ router.post('/login', async (req, res) => {
         role: user.role,
         avatarUrl: user.avatarUrl,
         phone: user.phone || null,
-        workerProfile: user.workerProfile
+        workerProfile: user.workerProfile,
       },
-      token
+      token,
     });
 
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Failed to login' });
+  }
+});
+
+// ==========================================
+// VERIFY EMAIL — user clicks link in email
+// ==========================================
+router.get('/verify-email/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+
+    const user = await User.findOne({
+      emailVerificationToken: token,
+      emailVerificationExpires: { $gt: new Date() },
+    }).select('+emailVerificationToken');
+
+    if (!user) {
+      return res.status(400).send(`
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+          <h2 style="color:#e53e3e">&#10060; Invalid or expired link</h2>
+          <p>This verification link has expired or already been used.</p>
+          <p>Please open the Nestoric app and request a new verification email.</p>
+        </body></html>
+      `);
+    }
+
+    user.isEmailVerified = true;
+    user.emailVerificationToken = null;
+    user.emailVerificationExpires = null;
+    await user.save();
+
+    res.send(`
+      <html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:60px;background:#f5f5f5">
+        <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:16px;padding:48px;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+          <div style="font-size:56px;margin-bottom:16px">&#9989;</div>
+          <h2 style="color:#38a169;margin:0 0 12px">Email verified!</h2>
+          <p style="color:#555;line-height:1.6">Your Nestoric account is now active.<br/>Open the app and sign in to continue.</p>
+        </div>
+      </body></html>
+    `);
+
+  } catch (error) {
+    console.error('Verify email error:', error);
+    res.status(500).send('<h2>Something went wrong. Please try again.</h2>');
+  }
+});
+
+// ==========================================
+// RESEND VERIFICATION EMAIL
+// ==========================================
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.json({ message: 'If that email exists, a new verification link has been sent.' });
+    }
+    if (user.isEmailVerified) {
+      return res.status(400).json({ error: 'Email is already verified' });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    user.emailVerificationToken = rawToken;
+    user.emailVerificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await user.save();
+
+    await sendVerificationEmail(email, rawToken);
+
+    res.json({ message: 'Verification email resent successfully.' });
+
+  } catch (error) {
+    console.error('Resend verification error:', error);
+    res.status(500).json({ error: 'Failed to resend verification email' });
   }
 });
 

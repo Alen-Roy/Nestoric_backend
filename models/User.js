@@ -64,6 +64,21 @@ const userSchema = new mongoose.Schema({
     trim: true
   },
 
+  // Email verification
+  isEmailVerified: {
+    type: Boolean,
+    default: false
+  },
+  emailVerificationToken: {
+    type: String,
+    default: null,
+    select: false  // Never returned in queries unless explicitly requested
+  },
+  emailVerificationExpires: {
+    type: Date,
+    default: null
+  },
+
   // Worker-specific fields (only for workers)
   workerProfile: {
     skills: [{
