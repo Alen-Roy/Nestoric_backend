@@ -85,6 +85,13 @@ const requestSchema = new mongoose.Schema({
     type: String,
     enum: ['unpaid', 'paid'],
     default: 'unpaid'
+  },
+
+  // Service tier selected by the client
+  plan: {
+    type: String,
+    enum: ['basic', 'standard', 'premium'],
+    default: 'basic'
   }
 
 }, {

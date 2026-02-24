@@ -201,7 +201,7 @@ router.put('/:id/note', authenticateToken, async (req, res) => {
 // ==========================================
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const { services, description, deadline, paymentId, amountPaid } = req.body;
+    const { services, description, deadline, paymentId, amountPaid, plan } = req.body;
 
     // Validate
     if (!services || services.length === 0) {
@@ -232,7 +232,8 @@ router.post('/', authenticateToken, async (req, res) => {
       uploadedFiles: req.body.uploadedFiles || [],
       paymentId,
       amountPaid: amountPaid || 0,
-      paymentStatus: 'paid'
+      paymentStatus: 'paid',
+      plan: plan || 'basic'
     });
 
     res.status(201).json({

@@ -16,10 +16,10 @@ const router = express.Router();
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
-      projectId:     process.env.FIREBASE_PROJECT_ID,
-      clientEmail:   process.env.FIREBASE_CLIENT_EMAIL,
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       // Replace escaped newlines that can appear in .env strings
-      privateKey:    process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
     }),
   });
 }
@@ -88,6 +88,7 @@ router.post('/google', async (req, res) => {
         fullName: user.fullName,
         role: user.role,
         avatarUrl: user.avatarUrl,
+        phone: user.phone || null,
         workerProfile: user.workerProfile,
       },
       token,
@@ -105,26 +106,26 @@ router.post('/google', async (req, res) => {
 router.post('/signup', async (req, res) => {
   try {
     // Get data from Flutter app
-    const { email, password, fullName } = req.body;
+    const { email, password, fullName, phone } = req.body;
 
     // STEP 1: Validate input
     if (!email || !password || !fullName) {
-      return res.status(400).json({ 
-        error: 'Please provide email, password, and full name' 
+      return res.status(400).json({
+        error: 'Please provide email, password, and full name'
       });
     }
 
     if (password.length < 6) {
-      return res.status(400).json({ 
-        error: 'Password must be at least 6 characters' 
+      return res.status(400).json({
+        error: 'Password must be at least 6 characters'
       });
     }
 
     // STEP 2: Check if email already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ 
-        error: 'Email already registered' 
+      return res.status(400).json({
+        error: 'Email already registered'
       });
     }
 
@@ -136,15 +137,16 @@ router.post('/signup', async (req, res) => {
       email,
       password: hashedPassword,
       fullName,
+      phone: phone || null,
       role: 'client' // Default role
     });
 
     // STEP 5: Create JWT token (like a ticket that proves you're logged in)
     const token = jwt.sign(
-      { 
+      {
         userId: user._id,      // MongoDB auto-generated ID
-        email: user.email, 
-        role: user.role 
+        email: user.email,
+        role: user.role
       },
       process.env.JWT_SECRET,  // Secret key from .env
       { expiresIn: '90d' }     // Token valid for 30 days
@@ -158,7 +160,8 @@ router.post('/signup', async (req, res) => {
         email: user.email,
         fullName: user.fullName,
         role: user.role,
-        avatarUrl: user.avatarUrl
+        avatarUrl: user.avatarUrl,
+        phone: user.phone || null,
       },
       token
     });
@@ -178,35 +181,35 @@ router.post('/login', async (req, res) => {
 
     // STEP 1: Validate input
     if (!email || !password) {
-      return res.status(400).json({ 
-        error: 'Please provide email and password' 
+      return res.status(400).json({
+        error: 'Please provide email and password'
       });
     }
 
     // STEP 2: Find user by email
     const user = await User.findOne({ email });
-    
+
     if (!user) {
-      return res.status(401).json({ 
-        error: 'Invalid email or password' 
+      return res.status(401).json({
+        error: 'Invalid email or password'
       });
     }
 
     // STEP 3: Check if password is correct
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    
+
     if (!isPasswordValid) {
-      return res.status(401).json({ 
-        error: 'Invalid email or password' 
+      return res.status(401).json({
+        error: 'Invalid email or password'
       });
     }
 
     // STEP 4: Create JWT token
     const token = jwt.sign(
-      { 
-        userId: user._id, 
-        email: user.email, 
-        role: user.role 
+      {
+        userId: user._id,
+        email: user.email,
+        role: user.role
       },
       process.env.JWT_SECRET,
       { expiresIn: '30d' }
@@ -221,6 +224,7 @@ router.post('/login', async (req, res) => {
         fullName: user.fullName,
         role: user.role,
         avatarUrl: user.avatarUrl,
+        phone: user.phone || null,
         workerProfile: user.workerProfile
       },
       token
@@ -261,7 +265,7 @@ router.get('/me', authenticateToken, async (req, res) => {
   try {
     // Get user from database (without password)
     const user = await User.findById(req.user.userId).select('-password');
-    
+
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -279,12 +283,13 @@ router.get('/me', authenticateToken, async (req, res) => {
 // ==========================================
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
-    const { fullName, avatarUrl } = req.body;
+    const { fullName, avatarUrl, phone } = req.body;
 
     // Build update object
     const updateData = {};
     if (fullName) updateData.fullName = fullName;
     if (avatarUrl) updateData.avatarUrl = avatarUrl;
+    if (phone !== undefined) updateData.phone = phone;
 
     // Update user
     const user = await User.findByIdAndUpdate(
@@ -295,7 +300,15 @@ router.put('/profile', authenticateToken, async (req, res) => {
 
     res.json({
       message: 'Profile updated successfully',
-      user
+      user: {
+        id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
+        phone: user.phone || null,
+        workerProfile: user.workerProfile,
+      }
     });
 
   } catch (error) {
@@ -312,14 +325,14 @@ router.put('/change-password', authenticateToken, async (req, res) => {
     const { currentPassword, newPassword } = req.body;
 
     if (!currentPassword || !newPassword) {
-      return res.status(400).json({ 
-        error: 'Please provide current and new password' 
+      return res.status(400).json({
+        error: 'Please provide current and new password'
       });
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ 
-        error: 'New password must be at least 6 characters' 
+      return res.status(400).json({
+        error: 'New password must be at least 6 characters'
       });
     }
 
