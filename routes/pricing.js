@@ -19,11 +19,18 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
-const adminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access only' });
+const User = require('../models/User');
+
+const adminOnly = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.userId).select('role');
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access only' });
+    }
+    next();
+  } catch {
+    res.status(500).json({ error: 'Failed to verify admin role' });
   }
-  next();
 };
 
 // ════════════════════════════════════════════════

@@ -21,12 +21,17 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
-// Admin check
-const isAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
+// Admin check — always reads fresh role from DB to avoid stale JWT issues
+const isAdmin = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user.userId).select('role');
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    next();
+  } catch {
+    res.status(500).json({ error: 'Failed to verify admin role' });
   }
-  next();
 };
 
 // ==========================================
@@ -36,30 +41,30 @@ router.get('/worker-stats', authenticateToken, async (req, res) => {
   try {
     // Only workers can access this
     if (req.user.role !== 'worker') {
-      return res.status(403).json({ 
+      return res.status(403).json({
         success: false,
-        error: 'Worker access only' 
+        error: 'Worker access only'
       });
     }
 
     // Count tasks by status
-    const totalTasks = await Request.countDocuments({ 
-      assignedWorkerId: req.user.userId 
+    const totalTasks = await Request.countDocuments({
+      assignedWorkerId: req.user.userId
     });
-    
-    const assigned = await Request.countDocuments({ 
-      assignedWorkerId: req.user.userId, 
-      status: 'assigned' 
+
+    const assigned = await Request.countDocuments({
+      assignedWorkerId: req.user.userId,
+      status: 'assigned'
     });
-    
-    const inProgress = await Request.countDocuments({ 
-      assignedWorkerId: req.user.userId, 
-      status: 'in_progress' 
+
+    const inProgress = await Request.countDocuments({
+      assignedWorkerId: req.user.userId,
+      status: 'in_progress'
     });
-    
-    const completed = await Request.countDocuments({ 
-      assignedWorkerId: req.user.userId, 
-      status: 'completed' 
+
+    const completed = await Request.countDocuments({
+      assignedWorkerId: req.user.userId,
+      status: 'completed'
     });
 
     // Get worker profile for rating
@@ -79,9 +84,9 @@ router.get('/worker-stats', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Get worker stats error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to get worker stats' 
+      error: 'Failed to get worker stats'
     });
   }
 });
@@ -93,30 +98,30 @@ router.get('/client-stats', authenticateToken, async (req, res) => {
   try {
     // Only clients can access this
     if (req.user.role !== 'client') {
-      return res.status(403).json({ 
+      return res.status(403).json({
         success: false,
-        error: 'Client access only' 
+        error: 'Client access only'
       });
     }
 
     // Count requests by status
-    const totalRequests = await Request.countDocuments({ 
-      clientId: req.user.userId 
+    const totalRequests = await Request.countDocuments({
+      clientId: req.user.userId
     });
-    
-    const pending = await Request.countDocuments({ 
-      clientId: req.user.userId, 
-      status: 'pending' 
+
+    const pending = await Request.countDocuments({
+      clientId: req.user.userId,
+      status: 'pending'
     });
-    
-    const inProgress = await Request.countDocuments({ 
-      clientId: req.user.userId, 
-      status: 'in_progress' 
+
+    const inProgress = await Request.countDocuments({
+      clientId: req.user.userId,
+      status: 'in_progress'
     });
-    
-    const completed = await Request.countDocuments({ 
-      clientId: req.user.userId, 
-      status: 'completed' 
+
+    const completed = await Request.countDocuments({
+      clientId: req.user.userId,
+      status: 'completed'
     });
 
     res.json({
@@ -131,9 +136,9 @@ router.get('/client-stats', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Get client stats error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to get client stats' 
+      error: 'Failed to get client stats'
     });
   }
 });
@@ -146,9 +151,9 @@ router.get('/workers', authenticateToken, async (req, res) => {
     const workers = await User.find({ role: 'worker' })
       .select('-password');
 
-    res.json({ 
+    res.json({
       success: true,
-      workers 
+      workers
     });
 
   } catch (error) {
@@ -264,40 +269,40 @@ router.get('/stats', authenticateToken, async (req, res) => {
 
     } else if (req.user.role === 'worker') {
       // Worker stats
-      const total = await Request.countDocuments({ 
-        assignedWorkerId: req.user.userId 
+      const total = await Request.countDocuments({
+        assignedWorkerId: req.user.userId
       });
-      const assigned = await Request.countDocuments({ 
-        assignedWorkerId: req.user.userId, 
-        status: 'assigned' 
+      const assigned = await Request.countDocuments({
+        assignedWorkerId: req.user.userId,
+        status: 'assigned'
       });
-      const inProgress = await Request.countDocuments({ 
-        assignedWorkerId: req.user.userId, 
-        status: 'in_progress' 
+      const inProgress = await Request.countDocuments({
+        assignedWorkerId: req.user.userId,
+        status: 'in_progress'
       });
-      const completed = await Request.countDocuments({ 
-        assignedWorkerId: req.user.userId, 
-        status: 'completed' 
+      const completed = await Request.countDocuments({
+        assignedWorkerId: req.user.userId,
+        status: 'completed'
       });
 
       stats = { total, assigned, inProgress, completed };
 
     } else {
       // Client stats
-      const total = await Request.countDocuments({ 
-        clientId: req.user.userId 
+      const total = await Request.countDocuments({
+        clientId: req.user.userId
       });
-      const pending = await Request.countDocuments({ 
-        clientId: req.user.userId, 
-        status: 'pending' 
+      const pending = await Request.countDocuments({
+        clientId: req.user.userId,
+        status: 'pending'
       });
-      const inProgress = await Request.countDocuments({ 
-        clientId: req.user.userId, 
-        status: 'in_progress' 
+      const inProgress = await Request.countDocuments({
+        clientId: req.user.userId,
+        status: 'in_progress'
       });
-      const completed = await Request.countDocuments({ 
-        clientId: req.user.userId, 
-        status: 'completed' 
+      const completed = await Request.countDocuments({
+        clientId: req.user.userId,
+        status: 'completed'
       });
 
       stats = { total, pending, inProgress, completed };
