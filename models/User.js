@@ -79,6 +79,16 @@ const userSchema = new mongoose.Schema({
     default: null
   },
 
+  // Password Reset
+  resetPasswordToken: {
+    type: String,
+    default: null
+  },
+  resetPasswordExpires: {
+    type: Date,
+    default: null
+  },
+
   // Worker-specific fields (only for workers)
   workerProfile: {
     skills: [{
