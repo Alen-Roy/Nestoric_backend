@@ -26,8 +26,24 @@ const app = express(); // This is your server!
 // STEP 4: Middleware (runs before routes)
 // ==========================================
 
-// Allow Flutter app to talk to this server
-app.use(cors());
+// Only allow requests from the Flutter app's known origins
+const allowedOrigins = [
+  'https://nestoric-backend.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:8080',
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow mobile app (no origin) and known origins
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 
 // Parse JSON data from requests
 app.use(express.json());
@@ -54,19 +70,9 @@ mongoose.connect(process.env.MONGODB_URI)
 // STEP 6: Test Route
 // ==========================================
 
-// When you visit http://localhost:3000/
+// Health check only — intentionally reveals nothing
 app.get('/', (req, res) => {
-  res.json({
-    message: '🚀 Nestoric Backend API is running!',
-    version: '1.0.0',
-    endpoints: {
-      auth: '/api/auth',
-      requests: '/api/requests',
-      users: '/api/users',
-      upload: '/api/upload',
-      pricing: '/api/pricing'
-    }
-  });
+  res.json({ status: 'ok' });
 });
 
 // ==========================================
@@ -155,12 +161,12 @@ app.use((req, res) => {
   });
 });
 
-// Catch all other errors
+// Catch all other errors — never expose internal details in production
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
+  console.error('Unhandled error:', err);
+  const isProd = process.env.NODE_ENV === 'production';
   res.status(err.status || 500).json({
-    error: 'Something went wrong!',
-    message: err.message
+    error: isProd ? 'Something went wrong. Please try again.' : err.message,
   });
 });
 

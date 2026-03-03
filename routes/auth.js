@@ -5,12 +5,38 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
 const PendingRegistration = require('../models/PendingRegistration');
 const admin = require('firebase-admin');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../utils/mailer');
 
 const router = express.Router();
+
+// ── Rate limiters ────────────────────────────────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,                   // 10 attempts per window
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,                    // 5 signups per hour per IP
+  message: { error: 'Too many accounts created. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,                    // 5 reset emails per window
+  message: { error: 'Too many reset requests. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // ==========================================
 // FIREBASE ADMIN - Initialized once
@@ -107,7 +133,7 @@ router.post('/google', async (req, res) => {
 // ==========================================
 // SIGNUP - Create new user account
 // ==========================================
-router.post('/signup', async (req, res) => {
+router.post('/signup', signupLimiter, async (req, res) => {
   try {
     const { email, password, fullName, phone } = req.body;
 
@@ -167,7 +193,7 @@ router.post('/signup', async (req, res) => {
 // ==========================================
 // LOGIN - Authenticate existing user
 // ==========================================
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -488,7 +514,7 @@ router.put('/change-password', authenticateToken, async (req, res) => {
 // ==========================================
 // FORGOT PASSWORD - Generate token and send email
 // ==========================================
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', forgotPasswordLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
