@@ -509,8 +509,16 @@ router.post('/forgot-password', async (req, res) => {
     user.resetPasswordExpires = new Date(Date.now() + 3600000); // 1 hour
     await user.save();
 
-    // Send email
-    await sendPasswordResetEmail(user.email, token);
+    // Send email — wrapped in its own try/catch so a Brevo failure
+    // doesn't expose a 500 to the user (token is already saved in DB).
+    console.log(`[ForgotPassword] Sending reset email to: ${user.email}`);
+    try {
+      await sendPasswordResetEmail(user.email, token);
+      console.log(`[ForgotPassword] Reset email sent successfully to: ${user.email}`);
+    } catch (mailErr) {
+      console.error('[ForgotPassword] BREVO ERROR:', JSON.stringify(mailErr, null, 2));
+      // Still return success — the token is saved; user can try again
+    }
 
     res.json({ message: 'If that email is registered, a reset link was sent.' });
   } catch (error) {
