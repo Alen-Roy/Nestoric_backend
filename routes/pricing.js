@@ -4,6 +4,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const ServicePricing = require('../models/ServicePricing');
+const PlanTier = require('../models/PlanTier');
 
 const router = express.Router();
 
@@ -125,6 +126,52 @@ router.delete('/:id', authenticateToken, adminOnly, async (req, res) => {
     res.json({ success: true, message: 'Service deleted' });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to delete service' });
+  }
+});
+
+// ════════════════════════════════════════════════
+// GET /api/pricing/plans  — public, returns all 3 tiers
+// Used by client payment page to build plan selector dynamically
+// ════════════════════════════════════════════════
+router.get('/plans', async (req, res) => {
+  try {
+    const tiers = await PlanTier.find().sort({ multiplier: 1 });
+    res.json({ success: true, tiers });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch plan tiers' });
+  }
+});
+
+// ════════════════════════════════════════════════
+// PUT /api/pricing/plans/:tierId  — admin only
+// Updates multiplier and/or perks for one tier (basic|standard|premium)
+// ════════════════════════════════════════════════
+router.put('/plans/:tierId', authenticateToken, adminOnly, async (req, res) => {
+  try {
+    const { multiplier, perks, label, emoji, color } = req.body;
+
+    if (multiplier !== undefined && (isNaN(multiplier) || multiplier < 0.1)) {
+      return res.status(400).json({ error: 'Multiplier must be at least 0.1' });
+    }
+
+    const update = {};
+    if (multiplier !== undefined) update.multiplier = multiplier;
+    if (perks !== undefined) update.perks = perks;
+    if (label !== undefined) update.label = label;
+    if (emoji !== undefined) update.emoji = emoji;
+    if (color !== undefined) update.color = color;
+
+    const updated = await PlanTier.findOneAndUpdate(
+      { tierId: req.params.tierId },
+      update,
+      { new: true }
+    );
+
+    if (!updated) return res.status(404).json({ error: 'Plan tier not found' });
+
+    res.json({ success: true, tier: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to update plan tier' });
   }
 });
 

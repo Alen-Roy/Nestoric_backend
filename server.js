@@ -117,8 +117,10 @@ try {
 try {
   const pricingRoutes = require('./routes/pricing');
   const ServicePricing = require('./models/ServicePricing');
+  const PlanTier = require('./models/PlanTier');
   app.use('/api/pricing', pricingRoutes);
   ServicePricing.seedDefaults(); // Auto-seeds default prices if DB is empty
+  PlanTier.seedDefaults();       // Auto-seeds plan tiers if DB is empty
   console.log('✅ Pricing routes loaded');
 } catch (error) {
   console.log('⚠️  Pricing routes not found - skipping:', error.message);
@@ -147,9 +149,9 @@ if (uploadRoutes) {
 
 // Catch all 404 errors (when route not found)
 app.use((req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     error: 'Route not found',
-    message: `Cannot ${req.method} ${req.url}` 
+    message: `Cannot ${req.method} ${req.url}`
   });
 });
 
