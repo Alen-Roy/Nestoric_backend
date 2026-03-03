@@ -528,6 +528,144 @@ router.post('/forgot-password', async (req, res) => {
 });
 
 // ==========================================
+// RESET PASSWORD FORM - Web page served from email link
+// GET /api/auth/reset-password-form?token=...
+// ==========================================
+router.get('/reset-password-form', async (req, res) => {
+  const { token } = req.query;
+
+  if (!token) {
+    return res.status(400).send(`
+      <html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:60px;background:#f5f5f5">
+        <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:16px;padding:48px;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+          <div style="font-size:56px;margin-bottom:16px">❌</div>
+          <h2 style="color:#e53e3e;margin:0 0 12px">Invalid Link</h2>
+          <p style="color:#555">No reset token provided. Please request a new password reset from the app.</p>
+        </div>
+      </body></html>
+    `);
+  }
+
+  // Validate token before showing form
+  const user = await User.findOne({
+    resetPasswordToken: token,
+    resetPasswordExpires: { $gt: new Date() },
+  });
+
+  if (!user) {
+    return res.status(400).send(`
+      <html><body style="font-family:-apple-system,sans-serif;text-align:center;padding:60px;background:#f5f5f5">
+        <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:16px;padding:48px;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+          <div style="font-size:56px;margin-bottom:16px">⏰</div>
+          <h2 style="color:#e53e3e;margin:0 0 12px">Link Expired</h2>
+          <p style="color:#555">This password reset link has expired or is invalid.<br/>Please request a new one from the Nestoric app.</p>
+        </div>
+      </body></html>
+    `);
+  }
+
+  const baseUrl = process.env.BACKEND_URL || 'https://nestoric-backend.onrender.com';
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8"/>
+      <meta name="viewport" content="width=device-width, initial-scale=1"/>
+      <title>Reset Password – Nestoric</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; margin: 0; padding: 20px; }
+        .container { max-width: 420px; margin: 40px auto; background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+        .header { background: linear-gradient(135deg, #FF6B6B, #FF8E53); padding: 32px; text-align: center; }
+        .header h1 { color: #fff; margin: 0; font-size: 24px; font-weight: 800; }
+        .header p { color: rgba(255,255,255,0.9); margin: 6px 0 0; font-size: 14px; }
+        .body { padding: 32px; }
+        .body p { color: #555; font-size: 15px; margin: 0 0 20px; }
+        label { display: block; font-size: 13px; font-weight: 600; color: #333; margin-bottom: 6px; }
+        input[type=password] { width: 100%; padding: 12px 14px; border: 1.5px solid #e0e0e0; border-radius: 10px; font-size: 15px; outline: none; transition: border 0.2s; }
+        input[type=password]:focus { border-color: #FF6B6B; }
+        .gap { height: 16px; }
+        button { width: 100%; padding: 14px; background: linear-gradient(135deg, #FF6B6B, #FF8E53); color: #fff; border: none; border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; margin-top: 24px; }
+        button:hover { opacity: 0.9; }
+        .error { color: #e53e3e; font-size: 13px; margin-top: 8px; display: none; }
+        .success-box { text-align: center; padding: 32px; display: none; }
+        .success-box .icon { font-size: 56px; margin-bottom: 12px; }
+        .success-box h2 { color: #38a169; margin: 0 0 10px; }
+        .success-box p { color: #555; font-size: 15px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Reset Password</h1>
+          <p>Nestoric Platform</p>
+        </div>
+        <div class="body">
+          <div id="form-section">
+            <p>Enter your new password below.</p>
+            <label for="newPassword">New Password</label>
+            <input type="password" id="newPassword" placeholder="At least 6 characters" minlength="6"/>
+            <div class="gap"></div>
+            <label for="confirmPassword">Confirm Password</label>
+            <input type="password" id="confirmPassword" placeholder="Repeat your password"/>
+            <div class="error" id="error-msg"></div>
+            <button onclick="submitReset()">Set New Password</button>
+          </div>
+          <div class="success-box" id="success-section">
+            <div class="icon">✅</div>
+            <h2>Password Reset!</h2>
+            <p>Your password has been changed successfully.<br/>Open the Nestoric app and sign in.</p>
+          </div>
+        </div>
+      </div>
+
+      <script>
+        async function submitReset() {
+          const newPassword = document.getElementById('newPassword').value;
+          const confirmPassword = document.getElementById('confirmPassword').value;
+          const errorMsg = document.getElementById('error-msg');
+
+          errorMsg.style.display = 'none';
+
+          if (newPassword.length < 6) {
+            errorMsg.textContent = 'Password must be at least 6 characters.';
+            errorMsg.style.display = 'block';
+            return;
+          }
+          if (newPassword !== confirmPassword) {
+            errorMsg.textContent = 'Passwords do not match.';
+            errorMsg.style.display = 'block';
+            return;
+          }
+
+          try {
+            const res = await fetch('${baseUrl}/api/auth/reset-password', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token: '${token}', newPassword }),
+            });
+            const data = await res.json();
+
+            if (res.ok) {
+              document.getElementById('form-section').style.display = 'none';
+              document.getElementById('success-section').style.display = 'block';
+            } else {
+              errorMsg.textContent = data.error || 'Something went wrong. Please try again.';
+              errorMsg.style.display = 'block';
+            }
+          } catch (e) {
+            errorMsg.textContent = 'Network error. Please check your connection.';
+            errorMsg.style.display = 'block';
+          }
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+// ==========================================
 // RESET PASSWORD - Use token to set new password
 // ==========================================
 router.post('/reset-password', async (req, res) => {

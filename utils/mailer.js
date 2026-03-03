@@ -121,7 +121,8 @@ async function sendPasswordResetEmail(to, token) {
     throw new Error('[Brevo] EMAIL_USER env variable is not set. Cannot send email.');
   }
 
-  const resetUrl = `nestoric://reset-password?token=${token}`;
+  const baseUrl = process.env.BACKEND_URL || 'https://nestoric-backend.onrender.com';
+  const resetUrl = `${baseUrl}/api/auth/reset-password-form?token=${token}`;
 
   const payload = JSON.stringify({
     sender: {
@@ -163,10 +164,6 @@ async function sendPasswordResetEmail(to, token) {
             <div class="note">
               ⏳ This link expires in <strong>1 hour</strong>. If you didn't request this, you can safely ignore this email.
             </div>
-            <p style="margin-top: 32px; font-size: 13px; color: #777;">
-              <strong>Note:</strong> Since deep linking might not work perfectly from all email clients, you can also copy this token and paste it into the app if needed:<br/>
-              <code style="display: block; background: #f0f0f0; padding: 8px; border-radius: 4px; margin-top: 8px; word-break: break-all;">${token}</code>
-            </p>
           </div>
           <div class="footer">
             © ${new Date().getFullYear()} Nestoric. All rights reserved.
