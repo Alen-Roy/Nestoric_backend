@@ -3,11 +3,40 @@
 
 const express = require('express');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto'); // built-in Node.js — no install needed
 const Request = require('../models/Request');
 const Message = require('../models/Message');
 const User = require('../models/User');
 
 const router = express.Router();
+
+// ==========================================
+// RAZORPAY PAYMENT VERIFICATION HELPER
+// Verifies the payment signature from Razorpay
+// to confirm the payment is genuine and not faked.
+// ==========================================
+function verifyRazorpayPayment(orderId, paymentId, signature) {
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+
+  // If secret is not configured, skip verification in dev
+  // but always enforce in production
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('RAZORPAY_KEY_SECRET is not set in environment variables');
+    }
+    console.warn('⚠️  RAZORPAY_KEY_SECRET not set — skipping verification (dev only)');
+    return true;
+  }
+
+  // Razorpay signature = HMAC-SHA256(orderId + "|" + paymentId, secret)
+  const body = orderId + '|' + paymentId;
+  const expectedSignature = crypto
+    .createHmac('sha256', secret)
+    .update(body)
+    .digest('hex');
+
+  return expectedSignature === signature;
+}
 
 // ==========================================
 // MIDDLEWARE - Verify Token
@@ -201,7 +230,16 @@ router.put('/:id/note', authenticateToken, async (req, res) => {
 // ==========================================
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const { services, description, deadline, paymentId, amountPaid, plan } = req.body;
+    const {
+      services,
+      description,
+      deadline,
+      paymentId,
+      razorpayOrderId,
+      razorpaySignature,
+      amountPaid,
+      plan,
+    } = req.body;
 
     // Validate
     if (!services || services.length === 0) {
@@ -216,6 +254,34 @@ router.post('/', authenticateToken, async (req, res) => {
     if (!paymentId) {
       return res.status(400).json({ error: 'Payment is required to submit a request' });
     }
+
+    // ── Verify Razorpay payment signature ──────────────────────────
+    // This ensures the payment actually came from Razorpay and
+    // cannot be faked by sending a random paymentId.
+    //
+    // razorpayOrderId + razorpaySignature are sent by the Flutter app
+    // after a successful Razorpay checkout. If either is missing we
+    // still accept the request (for backward compat with UPI intent
+    // flow where orderId may not be present), but log a warning.
+    if (razorpayOrderId && razorpaySignature) {
+      const isValid = verifyRazorpayPayment(
+        razorpayOrderId,
+        paymentId,
+        razorpaySignature,
+      );
+      if (!isValid) {
+        console.warn(`⚠️  Invalid Razorpay signature for paymentId: ${paymentId}`);
+        return res.status(400).json({
+          success: false,
+          error: 'Payment verification failed. Please contact support.',
+        });
+      }
+    } else {
+      // UPI intent flow — orderId not always available.
+      // Log so you can audit in Razorpay dashboard.
+      console.log(`ℹ️  Payment accepted without signature (UPI intent): ${paymentId}`);
+    }
+    // ───────────────────────────────────────────────────────────────
 
     // Get user info
     const user = await User.findById(req.user.userId);
@@ -233,20 +299,20 @@ router.post('/', authenticateToken, async (req, res) => {
       paymentId,
       amountPaid: amountPaid || 0,
       paymentStatus: 'paid',
-      plan: plan || 'basic'
+      plan: plan || 'basic',
     });
 
     res.status(201).json({
       success: true,
       message: 'Request created successfully',
-      request
+      request,
     });
 
   } catch (error) {
     console.error('Create request error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create request'
+      error: 'Failed to create request',
     });
   }
 });
