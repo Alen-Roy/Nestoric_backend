@@ -178,12 +178,13 @@ router.post('/workers', authenticateToken, isAdmin, async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create worker
+    // Create worker — admin-created accounts are pre-verified (no email verification needed)
     const worker = await User.create({
       email,
       password: hashedPassword,
       fullName,
       role: 'worker',
+      isEmailVerified: true,
       workerProfile: {
         skills: skills || [],
         phone,
