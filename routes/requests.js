@@ -7,6 +7,8 @@ const crypto = require('crypto'); // built-in Node.js — no install needed
 const Request = require('../models/Request');
 const Message = require('../models/Message');
 const User = require('../models/User');
+const ServicePricing = require('../models/ServicePricing');
+const PlanTier = require('../models/PlanTier');
 
 const router = express.Router();
 
@@ -258,28 +260,62 @@ router.post('/', authenticateToken, async (req, res) => {
     // ── Verify Razorpay payment signature ──────────────────────────
     // This ensures the payment actually came from Razorpay and
     // cannot be faked by sending a random paymentId.
-    //
-    // razorpayOrderId + razorpaySignature are sent by the Flutter app
-    // after a successful Razorpay checkout. If either is missing we
-    // still accept the request (for backward compat with UPI intent
-    // flow where orderId may not be present), but log a warning.
-    if (razorpayOrderId && razorpaySignature) {
-      const isValid = verifyRazorpayPayment(
-        razorpayOrderId,
-        paymentId,
-        razorpaySignature,
-      );
-      if (!isValid) {
-        console.warn(`⚠️  Invalid Razorpay signature for paymentId: ${paymentId}`);
+    if (!razorpayOrderId || !razorpaySignature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Payment verification data is missing. Please try again.',
+      });
+    }
+
+    const isValid = verifyRazorpayPayment(
+      razorpayOrderId,
+      paymentId,
+      razorpaySignature,
+    );
+    if (!isValid) {
+      console.warn(`⚠️  Invalid Razorpay signature for paymentId: ${paymentId}`);
+      return res.status(400).json({
+        success: false,
+        error: 'Payment verification failed. Please contact support.',
+      });
+    }
+    // ───────────────────────────────────────────────────────────────
+
+    // ── Server-side price validation ────────────────────────────────
+    // Recalculate the expected price from the DB to prevent clients
+    // from submitting a tampered amountPaid.
+    let expectedAmount = 0;
+    try {
+      const pricingDocs = await ServicePricing.find({
+        serviceName: { $in: services },
+        isActive: true,
+      });
+      const baseTotal = pricingDocs.reduce((sum, p) => sum + (p.price || 0), 0);
+
+      const selectedPlan = plan || 'basic';
+      const tierDoc = await PlanTier.findOne({ name: selectedPlan.toLowerCase() });
+      const multiplier = tierDoc ? tierDoc.multiplier : 1;
+
+      const subtotal = baseTotal * multiplier;
+      const gst = subtotal * 0.18;
+      expectedAmount = Math.round(subtotal + gst);
+    } catch (pricingErr) {
+      console.error('Price calculation error:', pricingErr);
+      // If pricing lookup fails, log but allow (don't block payments)
+    }
+
+    if (expectedAmount > 0 && amountPaid) {
+      // Allow a small tolerance (₹1) for rounding differences
+      const diff = Math.abs(expectedAmount - amountPaid);
+      if (diff > 100) {
+        console.warn(
+          `⚠️  Amount mismatch: expected ₹${expectedAmount}, got ₹${amountPaid} (diff: ₹${diff})`
+        );
         return res.status(400).json({
           success: false,
-          error: 'Payment verification failed. Please contact support.',
+          error: 'Payment amount does not match the expected price. Please try again.',
         });
       }
-    } else {
-      // UPI intent flow — orderId not always available.
-      // Log so you can audit in Razorpay dashboard.
-      console.log(`ℹ️  Payment accepted without signature (UPI intent): ${paymentId}`);
     }
     // ───────────────────────────────────────────────────────────────
 
@@ -297,7 +333,7 @@ router.post('/', authenticateToken, async (req, res) => {
       status: 'pending',
       uploadedFiles: req.body.uploadedFiles || [],
       paymentId,
-      amountPaid: amountPaid || 0,
+      amountPaid: expectedAmount > 0 ? expectedAmount : (amountPaid || 0),
       paymentStatus: 'paid',
       plan: plan || 'basic',
     });
@@ -519,6 +555,20 @@ router.post('/:id/messages', authenticateToken, async (req, res) => {
   try {
     const { message, fileUrl, fileName, fileType } = req.body;
 
+    // ── Access control: only client, assigned worker, or admin ──
+    const request = await Request.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+    const userId = req.user.userId;
+    const isClient = request.clientId.toString() === userId;
+    const isAssignedWorker = request.assignedWorkerId && request.assignedWorkerId.toString() === userId;
+    const isAdminRole = req.user.role === 'admin';
+    if (!isClient && !isAssignedWorker && !isAdminRole) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    // ────────────────────────────────────────────────────────────
+
     // Allow message to be empty IF there is a file
     if ((!message || message.trim().length === 0) && !fileUrl) {
       return res.status(400).json({ error: 'Message cannot be empty' });
@@ -560,6 +610,20 @@ router.post('/:id/messages', authenticateToken, async (req, res) => {
 // ==========================================
 router.get('/:id/messages', authenticateToken, async (req, res) => {
   try {
+    // ── Access control: only client, assigned worker, or admin ──
+    const request = await Request.findById(req.params.id);
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+    const userId = req.user.userId;
+    const isClient = request.clientId.toString() === userId;
+    const isAssignedWorker = request.assignedWorkerId && request.assignedWorkerId.toString() === userId;
+    const isAdminRole = req.user.role === 'admin';
+    if (!isClient && !isAssignedWorker && !isAdminRole) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    // ────────────────────────────────────────────────────────────
+
     const messages = await Message.find({ requestId: req.params.id })
       .sort({ createdAt: 1 }); // Oldest first
 

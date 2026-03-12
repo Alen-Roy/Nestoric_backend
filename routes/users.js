@@ -146,7 +146,7 @@ router.get('/client-stats', authenticateToken, async (req, res) => {
 // ==========================================
 // GET ALL WORKERS
 // ==========================================
-router.get('/workers', authenticateToken, async (req, res) => {
+router.get('/workers', authenticateToken, isAdmin, async (req, res) => {
   try {
     const workers = await User.find({ role: 'worker' })
       .select('-password');

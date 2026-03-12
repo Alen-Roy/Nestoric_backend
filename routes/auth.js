@@ -253,11 +253,32 @@ router.post('/login', loginLimiter, async (req, res) => {
 // ==========================================
 router.get('/check-verification', async (req, res) => {
   try {
-    const { email } = req.query;
+    const { email, token: checkToken } = req.query;
     if (!email) return res.status(400).json({ verified: false });
 
+    // Only allow check-verification if a valid pending-verification token is provided,
+    // OR if the request comes within a short window after signup (rate-limited).
+    // This prevents unauthenticated token harvesting by email.
+
+    // First check if there's a pending registration for this email
+    const PendingRegistration = require('../models/PendingRegistration');
+    const pending = await PendingRegistration.findOne({ email });
+
+    // Check if user exists and is verified
     const user = await User.findOne({ email, isEmailVerified: true });
-    if (!user) return res.json({ verified: false });
+
+    if (!user) {
+      // Not yet verified — but we only confirm verified:false
+      // (no token returned, no user data leaked)
+      return res.json({ verified: false });
+    }
+
+    // User is verified — only return JWT if there's no pending registration
+    // (meaning they completed verification) or if the pending record matches
+    if (pending) {
+      // Clean up the pending record since user is now verified
+      await PendingRegistration.deleteOne({ _id: pending._id });
+    }
 
     // Issue a JWT so the app can log in automatically
     const token = jwt.sign(

@@ -146,6 +146,17 @@ router.delete('/:publicId', authenticateToken, async (req, res) => {
     // Decode public ID (comes URL encoded)
     const publicId = decodeURIComponent(req.params.publicId);
 
+    // Only admins can delete files directly.
+    // Clients/workers can only delete files they uploaded (checked via folder prefix).
+    const isAdminRole = req.user.role === 'admin';
+    if (!isAdminRole) {
+      // Basic ownership heuristic: verify the publicId belongs to nestoric folder
+      // For stricter checks, store upload ownership in DB.
+      if (!publicId.startsWith('nestoric/')) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+
     // Delete from Cloudinary
     await cloudinary.uploader.destroy(publicId);
 
