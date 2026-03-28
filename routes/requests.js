@@ -293,7 +293,7 @@ router.post('/', authenticateToken, async (req, res) => {
       const baseTotal = pricingDocs.reduce((sum, p) => sum + (p.price || 0), 0);
 
       const selectedPlan = plan || 'basic';
-      const tierDoc = await PlanTier.findOne({ name: selectedPlan.toLowerCase() });
+      const tierDoc = await PlanTier.findOne({ tierId: selectedPlan.toLowerCase() }); // fixed: was 'name', model uses 'tierId'
       const multiplier = tierDoc ? tierDoc.multiplier : 1;
 
       const subtotal = baseTotal * multiplier;
