@@ -132,6 +132,15 @@ try {
   console.log('⚠️  Pricing routes not found - skipping:', error.message);
 }
 
+// ✅ Notification routes
+try {
+  const notificationRoutes = require('./routes/notifications');
+  app.use('/api/notifications', notificationRoutes);
+  console.log('✅ Notification routes loaded');
+} catch (error) {
+  console.log('⚠️  Notification routes not found - skipping:', error.message);
+}
+
 // Connect routes if they exist
 if (authRoutes) {
   app.use('/api/auth', authRoutes);

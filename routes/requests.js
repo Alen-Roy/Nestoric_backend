@@ -11,6 +11,7 @@ const ServicePricing = require('../models/ServicePricing');
 const PlanTier = require('../models/PlanTier');
 
 const router = express.Router();
+const { notify } = require('../utils/fcm');
 
 // ==========================================
 // RAZORPAY PAYMENT VERIFICATION HELPER
@@ -338,6 +339,24 @@ router.post('/', authenticateToken, async (req, res) => {
       plan: plan || 'basic',
     });
 
+    // ── Notify all admins about the new request ────────────────────────────
+    try {
+      const admins = await User.find({ role: 'admin' }).select('_id fcmToken').lean();
+      for (const admin of admins) {
+        await notify({
+          userId: admin._id,
+          title: '📋 New Service Request',
+          body: `${user.fullName} submitted a new request for ${services.slice(0, 2).join(', ')}${services.length > 2 ? '…' : ''}`,
+          type: 'request_created',
+          data: { requestId: request._id.toString() },
+          fcmToken: admin.fcmToken,
+        });
+      }
+    } catch (notifErr) {
+      console.warn('Notification error (non-fatal):', notifErr.message);
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
     res.status(201).json({
       success: true,
       message: 'Request created successfully',
@@ -477,12 +496,57 @@ router.put('/:id', authenticateToken, async (req, res) => {
       }
     }
 
+    const oldStatus = request.status;
+    const oldAssigned = request.assignedWorkerId?.toString();
+
     // Update request
     const updatedRequest = await Request.findByIdAndUpdate(
       req.params.id,
       updateData,
       { new: true }
     );
+
+    // ── Push notifications ───────────────────────────────────────────────
+    try {
+      const statusLabels = {
+        pending: 'Pending', assigned: 'Assigned',
+        in_progress: 'In Progress', completed: 'Completed ✅', cancelled: 'Cancelled',
+      };
+      const svcStr = (updatedRequest.services || []).slice(0, 2).join(', ');
+
+      // Notify client when their request status changes
+      if (updateData.status && updateData.status !== oldStatus) {
+        const client = await User.findById(updatedRequest.clientId).select('_id fcmToken').lean();
+        if (client) {
+          await notify({
+            userId: client._id,
+            title: `Request ${statusLabels[updateData.status] || updateData.status}`,
+            body: `Your request for ${svcStr} is now ${statusLabels[updateData.status] || updateData.status}.`,
+            type: updateData.status === 'completed' ? 'request_completed' : 'status_updated',
+            data: { requestId: updatedRequest._id.toString(), status: updateData.status },
+            fcmToken: client.fcmToken,
+          });
+        }
+      }
+
+      // Notify worker when assigned
+      if (updateData.assignedWorkerId && updateData.assignedWorkerId !== oldAssigned) {
+        const worker = await User.findById(updateData.assignedWorkerId).select('_id fcmToken').lean();
+        if (worker) {
+          await notify({
+            userId: worker._id,
+            title: '🔧 New Task Assigned',
+            body: `You've been assigned a request for ${svcStr}.`,
+            type: 'request_assigned',
+            data: { requestId: updatedRequest._id.toString() },
+            fcmToken: worker.fcmToken,
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.warn('Notification error (non-fatal):', notifErr.message);
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     res.json({
       success: true,

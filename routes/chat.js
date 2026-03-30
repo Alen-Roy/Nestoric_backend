@@ -8,6 +8,7 @@ const Request = require('../models/Request');
 const User = require('../models/User');
 
 const router = express.Router();
+const { notify } = require('../utils/fcm');
 
 // ==========================================
 // MIDDLEWARE - Verify Token
@@ -124,6 +125,41 @@ router.post('/:requestId/messages', authenticateToken, async (req, res) => {
       fileName: req.body.fileName || null,
       fileType: req.body.fileType || null
     });
+
+    // ── Notify all other participants ───────────────────────────────────────
+    try {
+      const participantIds = [
+        request.clientId?.toString(),
+        request.assignedWorkerId?.toString(),
+      ].filter(Boolean);
+
+      // Get all admins too
+      const admins = await User.find({ role: 'admin' }).select('_id').lean();
+      for (const a of admins) participantIds.push(a._id.toString());
+
+      const uniqueOthers = [...new Set(participantIds)].filter(
+        (id) => id !== req.user.userId,
+      );
+
+      for (const otherId of uniqueOthers) {
+        const other = await User.findById(otherId).select('_id fcmToken').lean();
+        if (other) {
+          await notify({
+            userId: other._id,
+            title: `💬 New message from ${user.fullName}`,
+            body: message.trim().length > 60
+              ? message.trim().slice(0, 57) + '…'
+              : message.trim(),
+            type: 'new_message',
+            data: { requestId },
+            fcmToken: other.fcmToken,
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.warn('Chat notification error (non-fatal):', notifErr.message);
+    }
+    // ──────────────────────────────────────────────────────────────────────
 
     res.status(201).json({
       success: true,

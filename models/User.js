@@ -57,6 +57,12 @@ const userSchema = new mongoose.Schema({
     default: null
   },
 
+  // FCM Device token for push notifications (updated on each login)
+  fcmToken: {
+    type: String,
+    default: null,
+  },
+
   // Phone number (for Razorpay pre-fill)
   phone: {
     type: String,
