@@ -1,62 +1,73 @@
-// utils/fcm.js — Firebase Cloud Messaging helper
-// Uses the Firebase Admin SDK (already in Firebase project) to send push
-// notifications. Falls back silently if the SDK is not configured.
+// utils/fcm.js — Firebase Cloud Messaging via firebase-admin
+'use strict';
 
-let admin = null;
+let _adminApp = null;          // the initialized FirebaseApp (not the module)
+let _initAttempted = false;    // only try once per process lifecycle
 
-function getAdmin() {
-  if (admin) return admin;
+function getApp() {
+  if (_adminApp) return _adminApp;
+  if (_initAttempted) return null;   // already failed — don't retry every call
+  _initAttempted = true;
+
   try {
-    admin = require('firebase-admin');
-    if (!admin.apps.length) {
-      const privateKey = process.env.FIREBASE_PRIVATE_KEY
-        ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
-        : undefined;
+    const admin = require('firebase-admin');
 
-      if (!privateKey || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PROJECT_ID) {
-        console.warn('⚠️  FCM: Firebase Admin env vars missing — push notifications disabled.');
-        admin = null;
-        return null;
-      }
+    // Parse private key — dotenv may leave literal "\n" sequences
+    const rawKey = process.env.FIREBASE_PRIVATE_KEY || '';
+    const privateKey = rawKey
+      .replace(/^"|"$/g, '')          // strip surrounding quotes if any
+      .replace(/\\n/g, '\n');         // convert escaped newlines
 
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId:   process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey,
-        }),
-      });
+    if (!privateKey || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PROJECT_ID) {
+      console.warn('⚠️  FCM: Missing Firebase Admin env vars — push notifications disabled.');
+      console.warn('   Required: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY');
+      return null;
     }
-    return admin;
-  } catch (e) {
-    console.warn('⚠️  FCM: firebase-admin not installed —', e.message);
-    admin = null;
+
+    // Reuse an existing app (handles hot-reload in dev)
+    if (admin.apps.length > 0) {
+      _adminApp = admin.apps[0];
+      console.log('✅ FCM: Reusing existing Firebase Admin app');
+      return _adminApp;
+    }
+
+    _adminApp = admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId:   process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey,
+      }),
+    });
+
+    console.log('✅ FCM: Firebase Admin SDK initialized');
+    return _adminApp;
+
+  } catch (err) {
+    console.error('❌ FCM: Failed to initialize Firebase Admin SDK:', err.message);
+    console.error('   Make sure firebase-admin is in package.json and installed (npm install)');
     return null;
   }
 }
 
 /**
- * Send a push notification to a single FCM token.
- * Silently ignores errors so the main request flow is never blocked.
- *
- * @param {string}  fcmToken  - Device token saved on login
- * @param {string}  title     - Notification title
- * @param {string}  body      - Notification body text
- * @param {object}  data      - Extra key-value payload (all values must be strings)
+ * Send a push notification to one FCM device token.
+ * Never throws — errors are logged and silently swallowed.
  */
 async function sendPush(fcmToken, title, body, data = {}) {
-  if (!fcmToken) return;
-  const a = getAdmin();
-  if (!a) return;
+  if (!fcmToken || !fcmToken.trim()) return;
 
-  // Convert all data values to strings (FCM requirement)
+  const app = getApp();
+  if (!app) return;
+
+  // FCM requires all data values to be strings
   const stringData = {};
   for (const [k, v] of Object.entries(data)) {
-    stringData[k] = String(v);
+    if (v !== undefined && v !== null) stringData[k] = String(v);
   }
 
   try {
-    await a.messaging().send({
+    const admin = require('firebase-admin');
+    await admin.messaging(app).send({
       token: fcmToken,
       notification: { title, body },
       data: stringData,
@@ -64,56 +75,65 @@ async function sendPush(fcmToken, title, body, data = {}) {
         priority: 'high',
         notification: {
           channelId: 'nexify_default',
-          sound: 'default',
+          sound:     'default',
           defaultVibrateTimings: true,
+          notificationCount: 1,
         },
       },
       apns: {
+        headers: { 'apns-priority': '10' },
         payload: {
           aps: {
+            alert: { title, body },
             sound: 'default',
             badge: 1,
+            'content-available': 1,
           },
         },
       },
     });
+
+    console.log(`📤 Push sent → …${fcmToken.slice(-10)}: "${title}"`);
+
   } catch (err) {
-    // Token might be stale — log but don't crash
-    console.warn(`FCM send failed for token …${fcmToken.slice(-8)}: ${err.message}`);
-    // If the token is invalid, clear it from the DB
+    console.warn(`⚠️  FCM send failed (…${fcmToken.slice(-10)}): ${err.message}`);
+
+    // Stale token — remove from DB so we don't keep trying
     if (
       err.code === 'messaging/registration-token-not-registered' ||
-      err.code === 'messaging/invalid-registration-token'
+      err.code === 'messaging/invalid-registration-token' ||
+      err.code === 'messaging/invalid-argument'
     ) {
       try {
         const User = require('../models/User');
         await User.updateOne({ fcmToken }, { $unset: { fcmToken: '' } });
+        console.log('   Stale FCM token removed from DB.');
       } catch (_) {}
     }
   }
 }
 
 /**
- * Create a DB notification record AND send a push if the user has a token.
+ * Save a notification to the DB and optionally push it to the device.
  *
  * @param {object} opts
- * @param {string} opts.userId
- * @param {string} opts.title
- * @param {string} opts.body
- * @param {string} opts.type
- * @param {object} opts.data
- * @param {string} [opts.fcmToken]
+ * @param {string|ObjectId} opts.userId   — recipient user _id
+ * @param {string}          opts.title    — notification title
+ * @param {string}          opts.body     — notification body
+ * @param {string}          [opts.type]   — one of the type enum values
+ * @param {object}          [opts.data]   — extra payload (all values stringified for push)
+ * @param {string}          [opts.fcmToken] — device token; skip push if omitted/null
  */
 async function notify({ userId, title, body, type = 'status_updated', data = {}, fcmToken }) {
-  // 1. Always save to DB (in-app notification history)
+  // Always persist to DB so in-app notification list works even without push
   try {
     const Notification = require('../models/Notification');
     await Notification.create({ userId, title, body, type, data });
-  } catch (e) {
-    console.error('Failed to save notification:', e.message);
+  } catch (err) {
+    console.error('Failed to save notification to DB:', err.message);
   }
 
-  // 2. Send push if we have a token
+  // Attempt push (non-blocking — never awaited at call sites that don't care)
   if (fcmToken) {
     await sendPush(fcmToken, title, body, { type, ...data });
   }
