@@ -15,14 +15,10 @@ const { notify } = require('../utils/fcm');
 
 // ==========================================
 // RAZORPAY PAYMENT VERIFICATION HELPER
-// Verifies the payment signature from Razorpay
-// to confirm the payment is genuine and not faked.
 // ==========================================
 function verifyRazorpayPayment(orderId, paymentId, signature) {
   const secret = process.env.RAZORPAY_KEY_SECRET;
 
-  // If secret is not configured, skip verification in dev
-  // but always enforce in production
   if (!secret) {
     if (process.env.NODE_ENV === 'production') {
       throw new Error('RAZORPAY_KEY_SECRET is not set in environment variables');
@@ -31,7 +27,6 @@ function verifyRazorpayPayment(orderId, paymentId, signature) {
     return true;
   }
 
-  // Razorpay signature = HMAC-SHA256(orderId + "|" + paymentId, secret)
   const body = orderId + '|' + paymentId;
   const expectedSignature = crypto
     .createHmac('sha256', secret)
@@ -57,179 +52,136 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ==========================================
-// GET WORKER'S ASSIGNED TASKS - NEW ENDPOINT
+// GET WORKER'S ASSIGNED TASKS
 // ==========================================
 router.get('/my-tasks', authenticateToken, async (req, res) => {
   try {
-    // Only workers can access this
     if (req.user.role !== 'worker') {
-      return res.status(403).json({
-        success: false,
-        error: 'Worker access only'
-      });
+      return res.status(403).json({ success: false, error: 'Worker access only' });
     }
 
-    // Get all requests assigned to this worker
-    const tasks = await Request.find({
-      assignedWorkerId: req.user.userId
-    })
-      .sort({ createdAt: -1 }); // Newest first
+    const tasks = await Request.find({ assignedWorkerId: req.user.userId })
+      .sort({ createdAt: -1 });
 
-    res.json({
-      success: true,
-      tasks,
-      count: tasks.length
-    });
-
+    res.json({ success: true, tasks, count: tasks.length });
   } catch (error) {
     console.error('Get my tasks error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get tasks'
-    });
+    res.status(500).json({ success: false, error: 'Failed to get tasks' });
   }
 });
 
 // ==========================================
-// GET CLIENT'S REQUESTS - NEW ENDPOINT
+// GET CLIENT'S REQUESTS
 // ==========================================
 router.get('/my-requests', authenticateToken, async (req, res) => {
   try {
-    // Only clients can access this
     if (req.user.role !== 'client') {
-      return res.status(403).json({
-        success: false,
-        error: 'Client access only'
-      });
+      return res.status(403).json({ success: false, error: 'Client access only' });
     }
 
-    // Get all requests made by this client
-    const requests = await Request.find({
-      clientId: req.user.userId
-    })
-      .sort({ createdAt: -1 }); // Newest first
+    const requests = await Request.find({ clientId: req.user.userId })
+      .sort({ createdAt: -1 });
 
-    res.json({
-      success: true,
-      requests,
-      count: requests.length
-    });
-
+    res.json({ success: true, requests, count: requests.length });
   } catch (error) {
     console.error('Get my requests error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get requests'
-    });
+    res.status(500).json({ success: false, error: 'Failed to get requests' });
   }
 });
 
 // ==========================================
-// UPDATE TASK STATUS - NEW ENDPOINT
+// UPDATE TASK STATUS (Worker)
+// ✅ FIX: now notifies the client on every status change
 // ==========================================
 router.put('/:id/status', authenticateToken, async (req, res) => {
   try {
     const { status, note } = req.body;
 
-    // Validate status
     const validStatuses = ['assigned', 'in_progress', 'completed'];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid status'
-      });
+      return res.status(400).json({ success: false, error: 'Invalid status' });
     }
 
     const request = await Request.findById(req.params.id);
-
     if (!request) {
-      return res.status(404).json({
-        success: false,
-        error: 'Request not found'
-      });
+      return res.status(404).json({ success: false, error: 'Request not found' });
     }
 
-    // Check if worker is assigned to this task
     if (request.assignedWorkerId?.toString() !== req.user.userId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Not assigned to this task'
-      });
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
     }
 
-    // Update status
+    const oldStatus = request.status;
     request.status = status;
     if (note) request.note = note;
-
     await request.save();
 
-    res.json({
-      success: true,
-      message: 'Status updated successfully',
-      request
-    });
+    // ── ✅ Notify client about status change ──────────────────────────────
+    if (status !== oldStatus) {
+      try {
+        const statusLabels = {
+          assigned:    'Assigned',
+          in_progress: 'In Progress',
+          completed:   'Completed ✅',
+        };
+        const svcStr = (request.services || []).slice(0, 2).join(', ');
+        const client = await User.findById(request.clientId).select('_id fcmToken').lean();
+        if (client) {
+          await notify({
+            userId:   client._id,
+            title:    `Request ${statusLabels[status] || status}`,
+            body:     `Your request for ${svcStr} is now ${statusLabels[status] || status}.`,
+            type:     status === 'completed' ? 'request_completed' : 'status_updated',
+            data:     { requestId: request._id.toString(), status },
+            fcmToken: client.fcmToken,
+          });
+        }
+      } catch (notifErr) {
+        console.warn('Notify error (non-fatal):', notifErr.message);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
+    res.json({ success: true, message: 'Status updated successfully', request });
   } catch (error) {
     console.error('Update status error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to update status'
-    });
+    res.status(500).json({ success: false, error: 'Failed to update status' });
   }
 });
 
 // ==========================================
-// UPDATE TASK NOTE - NEW ENDPOINT
+// UPDATE TASK NOTE (Worker)
 // ==========================================
 router.put('/:id/note', authenticateToken, async (req, res) => {
   try {
     const { note } = req.body;
 
     if (!note || note.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Note cannot be empty'
-      });
+      return res.status(400).json({ success: false, error: 'Note cannot be empty' });
     }
 
     const request = await Request.findById(req.params.id);
-
     if (!request) {
-      return res.status(404).json({
-        success: false,
-        error: 'Request not found'
-      });
+      return res.status(404).json({ success: false, error: 'Request not found' });
     }
 
-    // Check if worker is assigned to this task
     if (request.assignedWorkerId?.toString() !== req.user.userId) {
-      return res.status(403).json({
-        success: false,
-        error: 'Not assigned to this task'
-      });
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
     }
 
-    // Update note
     request.note = note.trim();
     await request.save();
 
-    res.json({
-      success: true,
-      message: 'Note updated successfully',
-      request
-    });
-
+    res.json({ success: true, message: 'Note updated successfully', request });
   } catch (error) {
     console.error('Update note error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to update note'
-    });
+    res.status(500).json({ success: false, error: 'Failed to update note' });
   }
 });
 
 // ==========================================
-// CREATE REQUEST - Client creates new request
+// CREATE REQUEST (Client)
+// ✅ FIX: now also sends payment_received notification to admins
 // ==========================================
 router.post('/', authenticateToken, async (req, res) => {
   try {
@@ -244,7 +196,6 @@ router.post('/', authenticateToken, async (req, res) => {
       plan,
     } = req.body;
 
-    // Validate
     if (!services || services.length === 0) {
       return res.status(400).json({ error: 'Please select at least one service' });
     }
@@ -253,14 +204,10 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Description must be at least 20 characters' });
     }
 
-    // Require payment confirmation before submitting
     if (!paymentId) {
       return res.status(400).json({ error: 'Payment is required to submit a request' });
     }
 
-    // ── Verify Razorpay payment signature ──────────────────────────
-    // This ensures the payment actually came from Razorpay and
-    // cannot be faked by sending a random paymentId.
     if (!razorpayOrderId || !razorpaySignature) {
       return res.status(400).json({
         success: false,
@@ -268,11 +215,7 @@ router.post('/', authenticateToken, async (req, res) => {
       });
     }
 
-    const isValid = verifyRazorpayPayment(
-      razorpayOrderId,
-      paymentId,
-      razorpaySignature,
-    );
+    const isValid = verifyRazorpayPayment(razorpayOrderId, paymentId, razorpaySignature);
     if (!isValid) {
       console.warn(`⚠️  Invalid Razorpay signature for paymentId: ${paymentId}`);
       return res.status(400).json({
@@ -280,11 +223,8 @@ router.post('/', authenticateToken, async (req, res) => {
         error: 'Payment verification failed. Please contact support.',
       });
     }
-    // ───────────────────────────────────────────────────────────────
 
-    // ── Server-side price validation ────────────────────────────────
-    // Recalculate the expected price from the DB to prevent clients
-    // from submitting a tampered amountPaid.
+    // ── Server-side price validation ────────────────────────────────────
     let expectedAmount = 0;
     try {
       const pricingDocs = await ServicePricing.find({
@@ -294,7 +234,7 @@ router.post('/', authenticateToken, async (req, res) => {
       const baseTotal = pricingDocs.reduce((sum, p) => sum + (p.price || 0), 0);
 
       const selectedPlan = plan || 'basic';
-      const tierDoc = await PlanTier.findOne({ tierId: selectedPlan.toLowerCase() }); // fixed: was 'name', model uses 'tierId'
+      const tierDoc = await PlanTier.findOne({ tierId: selectedPlan.toLowerCase() });
       const multiplier = tierDoc ? tierDoc.multiplier : 1;
 
       const subtotal = baseTotal * multiplier;
@@ -302,11 +242,9 @@ router.post('/', authenticateToken, async (req, res) => {
       expectedAmount = Math.round(subtotal + gst);
     } catch (pricingErr) {
       console.error('Price calculation error:', pricingErr);
-      // If pricing lookup fails, log but allow (don't block payments)
     }
 
     if (expectedAmount > 0 && amountPaid) {
-      // Allow a small tolerance (₹1) for rounding differences
       const diff = Math.abs(expectedAmount - amountPaid);
       if (diff > 100) {
         console.warn(
@@ -318,12 +256,11 @@ router.post('/', authenticateToken, async (req, res) => {
         });
       }
     }
-    // ───────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
 
-    // Get user info
     const user = await User.findById(req.user.userId);
+    const finalAmount = expectedAmount > 0 ? expectedAmount : (amountPaid || 0);
 
-    // Create request
     const request = await Request.create({
       clientId: user._id,
       clientName: user.fullName,
@@ -334,211 +271,188 @@ router.post('/', authenticateToken, async (req, res) => {
       status: 'pending',
       uploadedFiles: req.body.uploadedFiles || [],
       paymentId,
-      amountPaid: expectedAmount > 0 ? expectedAmount : (amountPaid || 0),
+      amountPaid: finalAmount,
       paymentStatus: 'paid',
       plan: plan || 'basic',
     });
 
-    // ── Notify all admins about the new request ────────────────────────────
+    // ── Notify admins: new request created ──────────────────────────────
     try {
       const admins = await User.find({ role: 'admin' }).select('_id fcmToken').lean();
       for (const admin of admins) {
         await notify({
-          userId: admin._id,
-          title: '📋 New Service Request',
-          body: `${user.fullName} submitted a new request for ${services.slice(0, 2).join(', ')}${services.length > 2 ? '…' : ''}`,
-          type: 'request_created',
-          data: { requestId: request._id.toString() },
+          userId:   admin._id,
+          title:    '📋 New Service Request',
+          body:     `${user.fullName} submitted a request for ${services.slice(0, 2).join(', ')}${services.length > 2 ? '…' : ''}`,
+          type:     'request_created',
+          data:     { requestId: request._id.toString() },
           fcmToken: admin.fcmToken,
         });
       }
     } catch (notifErr) {
-      console.warn('Notification error (non-fatal):', notifErr.message);
+      console.warn('Request created notification error (non-fatal):', notifErr.message);
     }
-    // ──────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── ✅ Notify admins: payment received ────────────────────────────────
+    try {
+      const admins = await User.find({ role: 'admin' }).select('_id fcmToken').lean();
+      for (const admin of admins) {
+        await notify({
+          userId:   admin._id,
+          title:    '💰 Payment Received',
+          body:     `${user.fullName} paid ₹${finalAmount} for ${services.slice(0, 2).join(', ')}${services.length > 2 ? '…' : ''}`,
+          type:     'payment_received',
+          data:     { requestId: request._id.toString(), amount: String(finalAmount) },
+          fcmToken: admin.fcmToken,
+        });
+      }
+    } catch (notifErr) {
+      console.warn('Payment received notification error (non-fatal):', notifErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     res.status(201).json({
       success: true,
       message: 'Request created successfully',
       request,
     });
-
   } catch (error) {
     console.error('Create request error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create request',
-    });
+    res.status(500).json({ success: false, error: 'Failed to create request' });
   }
 });
 
 // ==========================================
-// GET ALL REQUESTS - Based on user role
+// GET ALL REQUESTS (role-based)
 // ==========================================
 router.get('/', authenticateToken, async (req, res) => {
   try {
     let query = {};
 
-    // Filter based on role
     if (req.user.role === 'admin') {
-      // Admin sees ALL requests
       query = {};
     } else if (req.user.role === 'worker') {
-      // Worker sees only assigned requests
       query = { assignedWorkerId: req.user.userId };
     } else {
-      // Client sees only their requests
       query = { clientId: req.user.userId };
     }
 
-    // Get requests (sorted by newest first)
-    const requests = await Request.find(query)
-      .sort({ createdAt: -1 });
+    const requests = await Request.find(query).sort({ createdAt: -1 });
 
-    res.json({
-      success: true,
-      requests,
-      count: requests.length
-    });
-
+    res.json({ success: true, requests, count: requests.length });
   } catch (error) {
     console.error('Get requests error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get requests'
-    });
+    res.status(500).json({ success: false, error: 'Failed to get requests' });
   }
 });
 
 // ==========================================
-// GET SINGLE REQUEST with messages
+// GET SINGLE REQUEST
 // ==========================================
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    // Get request
     const request = await Request.findById(req.params.id);
-
     if (!request) {
-      return res.status(404).json({
-        success: false,
-        error: 'Request not found'
-      });
+      return res.status(404).json({ success: false, error: 'Request not found' });
     }
 
-    // Check if user has access
     const hasAccess =
       req.user.role === 'admin' ||
       request.clientId.toString() === req.user.userId ||
       request.assignedWorkerId?.toString() === req.user.userId;
 
     if (!hasAccess) {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied'
-      });
+      return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    res.json({
-      success: true,
-      request
-    });
-
+    res.json({ success: true, request });
   } catch (error) {
     console.error('Get request error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get request'
-    });
+    res.status(500).json({ success: false, error: 'Failed to get request' });
   }
 });
 
 // ==========================================
-// UPDATE REQUEST - Status, notes, files
+// UPDATE REQUEST (Admin general update)
+// — status change, worker assignment, notes
 // ==========================================
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
     const { status, note, uploadedFiles, assignedWorkerId } = req.body;
 
     const request = await Request.findById(req.params.id);
-
     if (!request) {
-      return res.status(404).json({
-        success: false,
-        error: 'Request not found'
-      });
+      return res.status(404).json({ success: false, error: 'Request not found' });
     }
 
-    // Check permissions
     const canUpdate =
       req.user.role === 'admin' ||
       request.assignedWorkerId?.toString() === req.user.userId;
 
     if (!canUpdate) {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied'
-      });
+      return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
-    // Build update object
     const updateData = {};
     if (status) updateData.status = status;
     if (note !== undefined) updateData.note = note;
     if (uploadedFiles) updateData.uploadedFiles = uploadedFiles;
 
-    // Admin can assign workers
     if (req.user.role === 'admin' && assignedWorkerId) {
       const worker = await User.findById(assignedWorkerId);
       if (worker) {
-        updateData.assignedWorkerId = assignedWorkerId;
+        updateData.assignedWorkerId  = assignedWorkerId;
         updateData.assignedWorkerName = worker.fullName;
         updateData.status = 'assigned';
       }
     }
 
-    const oldStatus = request.status;
+    const oldStatus   = request.status;
     const oldAssigned = request.assignedWorkerId?.toString();
 
-    // Update request
     const updatedRequest = await Request.findByIdAndUpdate(
       req.params.id,
       updateData,
       { new: true }
     );
 
-    // ── Push notifications ───────────────────────────────────────────────
+    // ── Push notifications ──────────────────────────────────────────────
     try {
       const statusLabels = {
-        pending: 'Pending', assigned: 'Assigned',
-        in_progress: 'In Progress', completed: 'Completed ✅', cancelled: 'Cancelled',
+        pending:     'Pending',
+        assigned:    'Assigned',
+        in_progress: 'In Progress',
+        completed:   'Completed ✅',
+        cancelled:   'Cancelled',
       };
       const svcStr = (updatedRequest.services || []).slice(0, 2).join(', ');
 
-      // Notify client when their request status changes
+      // Notify client when status changes
       if (updateData.status && updateData.status !== oldStatus) {
         const client = await User.findById(updatedRequest.clientId).select('_id fcmToken').lean();
         if (client) {
           await notify({
-            userId: client._id,
-            title: `Request ${statusLabels[updateData.status] || updateData.status}`,
-            body: `Your request for ${svcStr} is now ${statusLabels[updateData.status] || updateData.status}.`,
-            type: updateData.status === 'completed' ? 'request_completed' : 'status_updated',
-            data: { requestId: updatedRequest._id.toString(), status: updateData.status },
+            userId:   client._id,
+            title:    `Request ${statusLabels[updateData.status] || updateData.status}`,
+            body:     `Your request for ${svcStr} is now ${statusLabels[updateData.status] || updateData.status}.`,
+            type:     updateData.status === 'completed' ? 'request_completed' : 'status_updated',
+            data:     { requestId: updatedRequest._id.toString(), status: updateData.status },
             fcmToken: client.fcmToken,
           });
         }
       }
 
-      // Notify worker when assigned
+      // Notify worker when newly assigned
       if (updateData.assignedWorkerId && updateData.assignedWorkerId !== oldAssigned) {
         const worker = await User.findById(updateData.assignedWorkerId).select('_id fcmToken').lean();
         if (worker) {
           await notify({
-            userId: worker._id,
-            title: '🔧 New Task Assigned',
-            body: `You've been assigned a request for ${svcStr}.`,
-            type: 'request_assigned',
-            data: { requestId: updatedRequest._id.toString() },
+            userId:   worker._id,
+            title:    '🔧 New Task Assigned',
+            body:     `You've been assigned a request for ${svcStr}.`,
+            type:     'request_assigned',
+            data:     { requestId: updatedRequest._id.toString() },
             fcmToken: worker.fcmToken,
           });
         }
@@ -546,20 +460,12 @@ router.put('/:id', authenticateToken, async (req, res) => {
     } catch (notifErr) {
       console.warn('Notification error (non-fatal):', notifErr.message);
     }
-    // ──────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
 
-    res.json({
-      success: true,
-      message: 'Request updated successfully',
-      request: updatedRequest
-    });
-
+    res.json({ success: true, message: 'Request updated successfully', request: updatedRequest });
   } catch (error) {
     console.error('Update request error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to update request'
-    });
+    res.status(500).json({ success: false, error: 'Failed to update request' });
   }
 });
 
@@ -569,139 +475,140 @@ router.put('/:id', authenticateToken, async (req, res) => {
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     const request = await Request.findById(req.params.id);
-
     if (!request) {
-      return res.status(404).json({
-        success: false,
-        error: 'Request not found'
-      });
+      return res.status(404).json({ success: false, error: 'Request not found' });
     }
 
-    // Only admin or request owner can delete
     const canDelete =
       req.user.role === 'admin' ||
       request.clientId.toString() === req.user.userId;
 
     if (!canDelete) {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied'
-      });
+      return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
     await Request.findByIdAndDelete(req.params.id);
 
-    // Also delete associated messages
     try {
       await Message.deleteMany({ requestId: req.params.id });
     } catch (e) {
-      console.log('No Message model or error deleting messages');
+      console.log('Error deleting messages for request:', e.message);
     }
 
-    res.json({
-      success: true,
-      message: 'Request deleted successfully'
-    });
-
+    res.json({ success: true, message: 'Request deleted successfully' });
   } catch (error) {
     console.error('Delete request error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to delete request'
-    });
+    res.status(500).json({ success: false, error: 'Failed to delete request' });
   }
 });
 
 // ==========================================
-// SEND MESSAGE - Add message to request
+// SEND MESSAGE (via request route)
+// ✅ FIX: now notifies all other participants
 // ==========================================
 router.post('/:id/messages', authenticateToken, async (req, res) => {
   try {
     const { message, fileUrl, fileName, fileType } = req.body;
 
-    // ── Access control: only client, assigned worker, or admin ──
     const request = await Request.findById(req.params.id);
     if (!request) {
       return res.status(404).json({ error: 'Request not found' });
     }
-    const userId = req.user.userId;
-    const isClient = request.clientId.toString() === userId;
+
+    const userId           = req.user.userId;
+    const isClient         = request.clientId.toString() === userId;
     const isAssignedWorker = request.assignedWorkerId && request.assignedWorkerId.toString() === userId;
-    const isAdminRole = req.user.role === 'admin';
+    const isAdminRole      = req.user.role === 'admin';
+
     if (!isClient && !isAssignedWorker && !isAdminRole) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    // ────────────────────────────────────────────────────────────
 
-    // Allow message to be empty IF there is a file
     if ((!message || message.trim().length === 0) && !fileUrl) {
       return res.status(400).json({ error: 'Message cannot be empty' });
     }
 
-    // Get user info
     const user = await User.findById(req.user.userId);
 
-    // Create message
     const newMessage = await Message.create({
-      requestId: req.params.id,
-      senderId: user._id,
+      requestId:  req.params.id,
+      senderId:   user._id,
       senderName: user.fullName,
-      senderRole: req.user.role, // Added senderRole to be explicit
-      message: message ? message.trim() : '', // Changed 'text' to 'message'
-      fileUrl: fileUrl || null,
-      fileName: fileName || null,
-      fileType: fileType || null,
-      isRead: false
+      senderRole: req.user.role,
+      message:    message ? message.trim() : '',
+      fileUrl:    fileUrl  || null,
+      fileName:   fileName || null,
+      fileType:   fileType || null,
+      isRead:     false,
     });
 
-    res.status(201).json({
-      success: true,
-      message: 'Message sent successfully',
-      data: newMessage
-    });
+    // ── ✅ Notify all other participants ──────────────────────────────────
+    try {
+      const participantIds = [
+        request.clientId?.toString(),
+        request.assignedWorkerId?.toString(),
+      ].filter(Boolean);
 
+      const admins = await User.find({ role: 'admin' }).select('_id').lean();
+      for (const a of admins) participantIds.push(a._id.toString());
+
+      const uniqueOthers = [...new Set(participantIds)].filter((id) => id !== userId);
+
+      const msgPreview = message && message.trim().length > 0
+        ? (message.trim().length > 60 ? message.trim().slice(0, 57) + '…' : message.trim())
+        : `📎 ${fileName || 'File'} shared`;
+
+      for (const otherId of uniqueOthers) {
+        const other = await User.findById(otherId).select('_id fcmToken').lean();
+        if (other) {
+          await notify({
+            userId:   other._id,
+            title:    `💬 New message from ${user.fullName}`,
+            body:     msgPreview,
+            type:     'new_message',
+            data:     { requestId: req.params.id },
+            fcmToken: other.fcmToken,
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.warn('Chat notification error (non-fatal):', notifErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    res.status(201).json({ success: true, message: 'Message sent successfully', data: newMessage });
   } catch (error) {
     console.error('Send message error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to send message: ' + error.message
-    });
+    res.status(500).json({ success: false, error: 'Failed to send message: ' + error.message });
   }
 });
 
 // ==========================================
-// GET MESSAGES - Get all messages for a request
+// GET MESSAGES for a request
 // ==========================================
 router.get('/:id/messages', authenticateToken, async (req, res) => {
   try {
-    // ── Access control: only client, assigned worker, or admin ──
     const request = await Request.findById(req.params.id);
     if (!request) {
       return res.status(404).json({ error: 'Request not found' });
     }
-    const userId = req.user.userId;
-    const isClient = request.clientId.toString() === userId;
+
+    const userId           = req.user.userId;
+    const isClient         = request.clientId.toString() === userId;
     const isAssignedWorker = request.assignedWorkerId && request.assignedWorkerId.toString() === userId;
-    const isAdminRole = req.user.role === 'admin';
+    const isAdminRole      = req.user.role === 'admin';
+
     if (!isClient && !isAssignedWorker && !isAdminRole) {
       return res.status(403).json({ error: 'Access denied' });
     }
-    // ────────────────────────────────────────────────────────────
 
     const messages = await Message.find({ requestId: req.params.id })
-      .sort({ createdAt: 1 }); // Oldest first
+      .sort({ createdAt: 1 });
 
-    res.json({
-      success: true,
-      messages
-    });
-
+    res.json({ success: true, messages });
   } catch (error) {
     console.error('Get messages error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get messages'
-    });
+    res.status(500).json({ success: false, error: 'Failed to get messages' });
   }
 });
 
