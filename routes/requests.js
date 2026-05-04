@@ -195,34 +195,17 @@ router.post('/', authenticateToken, async (req, res) => {
       amountPaid,
       plan,
     } = req.body;
+if (razorpayOrderId && razorpaySignature) {
+  const isValid = verifyRazorpayPayment(razorpayOrderId, paymentId, razorpaySignature);
+  if (!isValid) {
+    console.warn(`⚠️  Invalid Razorpay signature for paymentId: ${paymentId}`);
+    return res.status(400).json({
+      success: false,
+      error: 'Payment verification failed. Please contact support.',
+    });
+  }
+}
 
-    if (!services || services.length === 0) {
-      return res.status(400).json({ error: 'Please select at least one service' });
-    }
-
-    if (!description || description.length < 20) {
-      return res.status(400).json({ error: 'Description must be at least 20 characters' });
-    }
-
-    if (!paymentId) {
-      return res.status(400).json({ error: 'Payment is required to submit a request' });
-    }
-
-    if (!razorpayOrderId || !razorpaySignature) {
-      return res.status(400).json({
-        success: false,
-        error: 'Payment verification data is missing. Please try again.',
-      });
-    }
-
-    const isValid = verifyRazorpayPayment(razorpayOrderId, paymentId, razorpaySignature);
-    if (!isValid) {
-      console.warn(`⚠️  Invalid Razorpay signature for paymentId: ${paymentId}`);
-      return res.status(400).json({
-        success: false,
-        error: 'Payment verification failed. Please contact support.',
-      });
-    }
 
     // ── Server-side price validation ────────────────────────────────────
     let expectedAmount = 0;
